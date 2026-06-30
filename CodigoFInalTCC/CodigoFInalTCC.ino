@@ -65,7 +65,7 @@ int termometroy = 130;
 //==================================================
 // VARIÁVEIS GERAIS
 //==================================================
-bool sensorConectado = false;
+bool sensorBPMeSPO2Conectado = false;
 bool sensorTempConectado = false;
 
 unsigned long intervalo = 0;
@@ -134,28 +134,105 @@ unsigned long tempoQueda = 0;
 unsigned long ultimoPrint = 0;
 
 //==================================================
-// PROTÓTIPOS DAS FUNÇÕES
+// FUNÇÕES
 //==================================================
-void conectarWiFi();
-void iniciarDisplay();
-void iniciarSensores();
+void fundo(uint16_t corTopo);
+void circulo(uint16_t cor);
 
-void lerTemperatura();
-void lerBatimentos();
-void lerQueda();
+void hora();
+void AtualizarHora();
 
-void atualizarTela();
-void desenharIcones();
+void wifi (uint16_t corWifi);
+void arco(int arcox, int arcoy, int raio, uint16_t corWifi);
 
-void verificarAlerta();
-void tocarBuzzer();
+void coracao(int tamanhoCoracao);
+
+void inicializacaoMAX30102();
+void LerMAX30102();
+void DetectarBatimento();
+void AtualizarSPO2();
+void gota();
+
+void termometro();
+void LerMAX30205();
+
+void LerMPU6050();
+void DetectarQueda();
+
+void alerta();
+void alertaVisual();
+void desligarAlerta();
+
+void MostrarDados();
 
 //==================================================
 // SETUP
 //==================================================
 void setup()
 {
-
+  /* Configura os Pinos e o Serial*/
+  Serial.begin(115200);
+  delay(1000);
+  SPI.begin(5, -1, 4);
+  Wire.begin(8, 9);
+  pinMode(BUZZER, OUTPUT);
+  pinMode(BOTAO, INPUT);
+  /* Inicializa o Display */
+  tft.begin();
+  tft.setRotation(0);
+  fundo(tft.color565(138, 0, 196));
+  circulo(tft.color565(138, 0, 196));
+  /* Inicializa o Wi-Fi */
+  WiFi.begin(Nome, Senha);
+  /* Checa se o Nome e Senha estão corretos */
+  while (WiFi.status() != WL_CONNECTED) {
+    wifi(tft.color565(255, 255, 255));
+    delay(500);
+    wifi(tft.color565(0, 0, 0));
+    delay(500);
+  }
+  /* Configura a hora */
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  /* Caso o Wi-Fi conectar o simbolo fica verde */
+  wifi(tft.color565(0, 255, 0));
+  /* Mostra a hora e data */
+  hora();
+  /* Inicialização dos sensores */
+  Serial.println("Iniciando sensores...");
+  // ============================
+  // Sensor de Batimento e SpO2
+  // ============================
+  if (Sensor_Batimento_e_Spo2.begin(Wire, I2C_SPEED_STANDARD)) {
+    Serial.println("MAX30102 conectado");
+    sensorBPMeSPO2Conectado = true;
+    inicializacaoMAX30102();
+  } else {
+    Serial.println("MAX30102 nao encontrado");
+  }
+  // ============================
+  // Sensor de Temperatura
+  // ============================
+  if(!Sensor_Temperatura.scanAvailableSensors())
+  {
+    Serial.println("MAX30205 nao encontrado!");
+  }else{
+    Serial.println("MAX30205 encontrado!");
+    Sensor_Temperatura.begin();
+    sensorTempConectado = true;
+  }
+  // =========================
+  // MPU6050
+  // =========================
+  if (!Sensor_Queda.begin(0x68, &Wire)) {
+    Serial.println("MPU6050 nao encontrado");
+  }else{
+    Serial.println("MPU6050 encontrado!");
+    Sensor_Queda.setAccelerometerRange(MPU6050_RANGE_8_G);
+    Sensor_Queda.setGyroRange(MPU6050_RANGE_500_DEG);
+    Sensor_Queda.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  }
+  gota();
+  termometro();
 }
 
 //==================================================
@@ -163,7 +240,13 @@ void setup()
 //==================================================
 void loop()
 {
-
+  AtualizarHora();
+  LerMAX30102();
+  LerMAX30205();
+  LerMPU6050();
+  desligarAlerta();
+  DetectarQueda();
+  MostrarDados();
 }
 
 //==================================================
@@ -258,6 +341,17 @@ void hora() {
     tft.printf("%02d", timeinfo.tm_min);
   }
 }
+
+void AtualizarHora(){
+  // Atualiza a hora a cada segundo
+  if (millis() - ultimaAtualizacaoHora >= 1000) {
+    
+    hora();
+
+    ultimaAtualizacaoHora = millis();
+  }
+}
+
 //---------------- Símbolo Wi-Fi ----------------//
 void wifi (uint16_t corWifi){
 
