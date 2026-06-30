@@ -12,6 +12,8 @@
 
 #include <Adafruit_MPU6050.h>
 
+#include <HTTPClient.h>
+
 #include <WiFi.h>
 #include <time.h>
 #include <math.h>
@@ -41,10 +43,17 @@ Adafruit_MPU6050 Sensor_Queda;
 const char* Nome = "Thaysla casa";
 const char* Senha = "Taysoncasa.#";
 
+//==================================================
+// CONFIGURAÇÕES DA HORA
+//==================================================
 const char* ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = -10800;
 const int daylightOffset_sec = 0;
 
+//==================================================
+// API
+//==================================================
+char* url = "https://api-monitoramento-pvcc.onrender.com/dados";
 //==================================================
 // CONFIGURAÇÕES DA TELA
 //==================================================
@@ -55,6 +64,8 @@ int wifiy = 220;
 
 int coracaox = 40;
 int coracaoy = 100;
+bool TamanhoCoracao = false;
+
 
 int gotax = 40;
 int gotay = 160;
@@ -67,9 +78,14 @@ int termometroy = 130;
 //==================================================
 bool sensorBPMeSPO2Conectado = false;
 bool sensorTempConectado = false;
+bool sensorQuedaConectado = false;
 
-unsigned long intervalo = 0;
+unsigned long intervaloCoracao = 0;
+unsigned long ultimaAnimacao = 0;
 unsigned long ultimaAtualizacaoHora = 0;
+unsigned long ultimoEnvioAPI = 0;
+
+int ContatoSensor = 0;
 
 //==================================================
 // SENSOR MAX30102
@@ -126,6 +142,7 @@ float WccMagnitude;
 float movimento = 0;
 
 bool PossivelQueda = false;
+bool QuedaVerdadeira = false;
 unsigned long tempoQueda = 0;
 
 //==================================================
@@ -146,6 +163,7 @@ void wifi (uint16_t corWifi);
 void arco(int arcox, int arcoy, int raio, uint16_t corWifi);
 
 void coracao(int tamanhoCoracao);
+void animacaoCoracao();
 
 void inicializacaoMAX30102();
 void LerMAX30102();
@@ -227,6 +245,7 @@ void setup()
     Serial.println("MPU6050 nao encontrado");
   }else{
     Serial.println("MPU6050 encontrado!");
+    sensorQuedaConectado = true;
     Sensor_Queda.setAccelerometerRange(MPU6050_RANGE_8_G);
     Sensor_Queda.setGyroRange(MPU6050_RANGE_500_DEG);
     Sensor_Queda.setFilterBandwidth(MPU6050_BAND_21_HZ);
@@ -246,6 +265,7 @@ void loop()
   LerMPU6050();
   desligarAlerta();
   DetectarQueda();
+  animacaoCoracao();
   MostrarDados();
 }
 
@@ -341,7 +361,7 @@ void hora() {
     tft.printf("%02d", timeinfo.tm_min);
   }
 }
-
+//---------------- ATUALIZAR HORA ----------------//
 void AtualizarHora(){
   // Atualiza a hora a cada segundo
   if (millis() - ultimaAtualizacaoHora >= 1000) {
@@ -350,6 +370,21 @@ void AtualizarHora(){
 
     ultimaAtualizacaoHora = millis();
   }
+}
+//---------------- HORA PARA API ----------------//
+String dataAtual() {
+
+  struct tm timeinfo;
+
+  if (!getLocalTime(&timeinfo)) {
+    return "";
+  }
+
+  char buffer[20];
+
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+
+  return String(buffer);
 }
 
 //---------------- Símbolo Wi-Fi ----------------//
@@ -388,6 +423,27 @@ void coracao(int tamanhoCoracao){
     coracaox, coracaoy + 3 * tamanhoCoracao,
     GC9A01A_RED
   );
+}
+
+//---------------- Animar Coração ----------------//
+void animacaoCoracao(){
+  if (MediaBatimento > 0){
+    intervaloCoracao = 60000 / MediaBatimento;
+    // 60 BPM - 1 vez por segundo
+    // 90 BPM - 1,5 vezes por segundo
+    // 120 BPM - 2 vezes por segundo
+    if (millis() - ultimaAnimacao >= intervaloCoracao){
+      ultimaAnimacao = millis();
+      /* Apagar o antigo */
+      tft.fillRect(coracaox - 25, coracaoy - 10, 50, 45, GC9A01A_BLACK);
+      TamanhoCoracao = !TamanhoCoracao;
+      if(TamanhoCoracao){
+        coracao(10);
+      }else{
+        coracao(8);
+      }
+    }
+  }
 }
 //---------------- Trazer o SpO2 da propria biblioteca ----------------//
 void inicializacaoMAX30102(){
@@ -630,12 +686,12 @@ void DetectarQueda() {
 
       if (movimento < 1.5 &&
           WccMagnitude < 0.2) {
-
+        QuedaVerdadeira = true;
         Serial.println("\nQUEDA DETECTADA\n");
         circulo(tft.color565(255, 0, 0));
         tone(BUZZER, 2000);
       }
-
+      QuedaVerdadeira = false;
       PossivelQueda = false;
     }
   }
@@ -702,27 +758,116 @@ void desligarAlerta(){
     Serial.println("ALARME CANCELADO");
   }
 }
+//---------------- ENVIO DA API ----------------//
+void EnviarAPI() {
+  /* Envia a cada 5 segundos */ 
+  if (millis() - ultimoEnvioAPI < 5000) {
+    return; // Não envia nada
+  }
+  ultimoEnvioAPI = millis();
+  /* Se o Wi-Fi estiver funcionando envia a API */
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin(url);
+    http.addHeader(
+      "Content-Type",
+      "application/json"
+    );
+    http.addHeader(
+      "Authorization",
+      "X%BNY&9@1s8!A" /* TOKEN */
+    );
+    // DEFINE MOVIMENTO
+    int nivelMovimento = 0;
+    if (movimento < 1.5 && WccMagnitude < 0.2) {
+      /* Parado */
+      nivelMovimento = 0;
+    } else if (movimento < 4) {
+      /* Movimento Leve */
+      nivelMovimento = 1;
+    } else if (movimento < 10){
+      /* Andando */
+      nivelMovimento = 2;
+    }
+    // JSON
+    String json = "{";
+    /* dados para envio */
+    // Cardiaco
+    json += "\"Batimento_Atual\":"  + String(BatimentosPorMinuto) + ",";
+    json += "\"Media_Batimento\":"  + String(MediaBatimento) + ",";
+    // Spo2
+    json += "\"Oxigenacao\":"      + String(Spo2) + ",";
+    // Temperatura
+    json += "\"Temperatura\":"     + String(tempC) + ",";
+    // ContatoSensorBPM
+    json += "\"Contato_Sensor\":"     + String(ContatoSensor) + ","; // 0 sem contato, 1 contato fraco e 2 encostado
+    // Aceleracao
+    json += "\"Aceleracao_X\":"    + String(aceleracao.acceleration.x) + ",";
+    json += "\"Aceleracao_Y\":"    + String(aceleracao.acceleration.y) + ",";
+    json += "\"Aceleracao_Z\":"    + String(aceleracao.acceleration.z) + ",";
+    // Giroscopio
+    json += "\"Giroscopio_X\":"    + String(giroscopio.gyro.x) + ",";
+    json += "\"Giroscopio_Y\":"    + String(giroscopio.gyro.y) + ",";
+    json += "\"Giroscopio_Z\":"    + String(giroscopio.gyro.z) + ",";
+    // Intensidade da acelerção total
+    json += "\"Acelerometro\":"    + String(AccMagnitude) + ",";
+    // Velocidade angular
+    json += "\"Giroscopio\":"      + String(WccMagnitude) + ",";
+    // movimento
+    json += "\"Movimento\":"       + String(movimento) + ",";
+    json += "\"NivelMovimento\":"  + String(nivelMovimento) + ",";
+    // Detectar queda
+    json += "\"Possivel_Queda\":"  + String(PossivelQueda) + ","; // 1 = true ou 0 = false
+    json += "\"Queda_Detectada\":"  + String(QuedaVerdadeira) + ","; // 1 = true ou 0 = false
+    json += "\"Alerta\":"          + String(alertaAtivo) + ","; // 1 = true ou 0 = false
+    // BPM e SpO2 valido ?
+    json += "\"Spo2_Valido\":" + String(Spo2Valido) + ",";
+    json += "\"BPM_Valido\":" + String(BPMvalido) + ",";
+    // Sensores
+    json += "\"SensorMAX30102_Coracao\":" + String(sensorBPMeSPO2Conectado) + ","; // 1 = true ou 0 = false
+    json += "\"SensorMAX30205_Temperatura\":" + String(sensorTempConectado) + ","; // 1 = true ou 0 = false
+    json += "\"SensorMPU6050_Queda\":" + String(sensorQuedaConectado) + ","; // 1 = true ou 0 = false
+    // Outros
+    json += "\"Data\":\""          + dataAtual() + "\",";
+    json += "\"WiFiRSSI\":"        + String(WiFi.RSSI() + ",");
+    json += "\"Tempo_Ligado\":" + String(millis()/1000);
+    json += "}";
+    // =========================
+    // ENVIA
+    // =========================
+    int codigo = http.POST(json);
+    Serial.println("\n========== API ==========");
+    Serial.print("HTTP: ");
+    Serial.println(codigo);
+    Serial.println("JSON enviado:");
+    Serial.println(json);
+    Serial.println("=========================\n");
+    http.end();
+  } else {
+    Serial.println("WiFi desconectado");
+    wifi(tft.color565(255, 255, 255));
+  }
+}
 //---------------- Mostrar dados no Serial e no Display ----------------//
 void MostrarDados() {
-
   if (millis() - ultimoPrint > 500) {
-
     ultimoPrint = millis();
-
     Serial.println("===================================");
     // DEDO DETECTADO
     if (IR > 50000) {
       Serial.println("Pele encostada\n");
+      ContatoSensor = 2;
     }
     // CONTATO FRACO
     else if (IR >= 10000 && IR < 50000) {
       Serial.println("Contato fraco com a pele\n");
+      ContatoSensor = 1;
     }
     // SEM CONTATO
     else {
       Serial.println("Sem contato com a pele\n");
+      ContatoSensor = 0;
     }
-
     // CARDIACO
     Serial.println("CARDIACO");
 
@@ -741,8 +886,6 @@ void MostrarDados() {
     tft.setTextColor(tft.color565(138, 0, 196));
     tft.setCursor(125, 100);
     tft.print("BPM");
-
-
 
     Serial.print("SPO2: ");
 
@@ -771,7 +914,6 @@ void MostrarDados() {
     tft.setTextColor(tft.color565(138, 0, 196));
     tft.setCursor(106, 147);
     tft.print("%");
-
 
     Serial.println("------------------------------");
     Serial.print("Temperatura: ");
