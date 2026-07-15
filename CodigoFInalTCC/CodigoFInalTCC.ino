@@ -86,6 +86,12 @@ unsigned long ultimaAtualizacaoHora = 0;
 unsigned long ultimoEnvioAPI = 0;
 
 int ContatoSensor = 0;
+int contadorWiFi = 0;
+
+
+bool estadoAlerta = false;
+int contadorPiscadas = 0;
+unsigned long tempoAlerta = 0;
 
 //==================================================
 // SENSOR MAX30102
@@ -178,9 +184,9 @@ void LerMPU6050();
 void DetectarQueda();
 
 void alerta();
-void alertaVisual();
 void desligarAlerta();
 
+void EnviarAPI();
 void MostrarDados();
 
 //==================================================
@@ -194,7 +200,7 @@ void setup()
   SPI.begin(5, -1, 4);
   Wire.begin(8, 9);
   pinMode(BUZZER, OUTPUT);
-  pinMode(BOTAO, INPUT);
+  pinMode(BOTAO, INPUT_PULLUP);
   /* Inicializa o Display */
   tft.begin();
   tft.setRotation(0);
@@ -203,16 +209,20 @@ void setup()
   /* Inicializa o Wi-Fi */
   WiFi.begin(Nome, Senha);
   /* Checa se o Nome e Senha estão corretos */
-  while (WiFi.status() != WL_CONNECTED) {
-    wifi(tft.color565(255, 255, 255));
-    delay(500);
-    wifi(tft.color565(0, 0, 0));
-    delay(500);
-  }
+  if (WiFi.status() == WL_CONNECTED) {
+    /* Caso o Wi-Fi conectar o simbolo fica verde */
+      wifi(tft.color565(0, 255, 0));
+  }else{
+      if (contadorWiFi < 10){
+        wifi(tft.color565(255, 255, 255));
+        delay(500);
+        wifi(tft.color565(0, 0, 0));
+        delay(500);
+        contadorWiFi++;
+      }
+    }
   /* Configura a hora */
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  /* Caso o Wi-Fi conectar o simbolo fica verde */
-  wifi(tft.color565(0, 255, 0));
   /* Mostra a hora e data */
   hora();
   /* Inicialização dos sensores */
@@ -252,6 +262,7 @@ void setup()
   }
   gota();
   termometro();
+  coracao(8);
 }
 
 //==================================================
@@ -266,6 +277,7 @@ void loop()
   desligarAlerta();
   DetectarQueda();
   animacaoCoracao();
+  EnviarAPI();
   MostrarDados();
 }
 
@@ -382,7 +394,7 @@ String dataAtual() {
 
   char buffer[20];
 
-  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &timeinfo);
+  strftime(buffer, sizeof(buffer), "%d-%m-%Y %H:%M:%S", &timeinfo);
 
   return String(buffer);
 }
@@ -669,7 +681,8 @@ void LerMPU6050() {
 //---------------- Detectar q Queda ----------------//
 void DetectarQueda() {
 
-  if (movimento >= 10 &&
+  if (!PossivelQueda &&
+      movimento >= 10 &&
       WccMagnitude > 2.0) {
 
     PossivelQueda = true;
@@ -682,17 +695,22 @@ void DetectarQueda() {
 
   if (PossivelQueda) {
 
-    if (millis() - tempoQueda > 3000) {
+    alerta();
+
+    if (millis() - tempoQueda > 1500) {
 
       if (movimento < 1.5 &&
           WccMagnitude < 0.2) {
         QuedaVerdadeira = true;
+        PossivelQueda = false;
+        alertaAtivo = false;
         Serial.println("\nQUEDA DETECTADA\n");
         circulo(tft.color565(255, 0, 0));
-        tone(BUZZER, 2000);
+        tone(BUZZER, 4500);
+      }else {
+            QuedaVerdadeira = false;
+            PossivelQueda = false;
       }
-      QuedaVerdadeira = false;
-      PossivelQueda = false;
     }
   }
 }
@@ -703,53 +721,46 @@ void circulo(uint16_t cor){
   }
 }
 //---------------- Som de alerta ----------------//
-void alerta(){
+void alerta() {
 
   if (!alertaAtivo) {
     noTone(BUZZER);
     return;
   }
 
-  if (millis() - inicioAlerta < 3000) {
+  if (millis() - tempoAlerta >= 150) {
 
-    if ((millis() / 500) % 2)
-      tone(BUZZER, 1500);
-    else
+    tempoAlerta = millis();
+
+    estadoAlerta = !estadoAlerta;
+
+    if (estadoAlerta) {
+
+      tone(BUZZER, 4500);
+      circulo(tft.color565(247,239,5));
+
+    } else {
+
       noTone(BUZZER);
+      circulo(tft.color565(138,0,196));
 
-  } else {
+      contadorPiscadas++;
 
-    noTone(BUZZER);
-    alertaAtivo = false;
-  }
-}
-//---------------- Alerta Visual ----------------//
-void alertaVisual() {
+      if (contadorPiscadas >= 3) {
 
-  static unsigned long tempoPisca = 0;
-  static bool estadoPisca = false;
+        alertaAtivo = false;
+        contadorPiscadas = 0;
 
-  if (millis() - tempoPisca >= 300) {
-
-    tempoPisca = millis();
-
-    estadoPisca = !estadoPisca;
-
-    if (estadoPisca) {
-      // Amarelo
-      circulo(tft.color565(247, 239, 5));
-    }
-    else {
-      // Roxo
-      circulo(tft.color565(138, 0, 196));
+      }
     }
   }
 }
 //---------------- Desligar o Alerta ----------------//
 void desligarAlerta(){
-  if(digitalRead(BOTAO) == HIGH){
+  if(digitalRead(BOTAO) == LOW){
     alertaAtivo = false;
     PossivelQueda = false;
+    QuedaVerdadeira = false;
 
     noTone(BUZZER);
 
@@ -829,7 +840,7 @@ void EnviarAPI() {
     json += "\"SensorMPU6050_Queda\":" + String(sensorQuedaConectado) + ","; // 1 = true ou 0 = false
     // Outros
     json += "\"Data\":\""          + dataAtual() + "\",";
-    json += "\"WiFiRSSI\":"        + String(WiFi.RSSI() + ",");
+    json += "\"WiFiRSSI\":"        + String(WiFi.RSSI()) + ",";
     json += "\"Tempo_Ligado\":" + String(millis()/1000);
     json += "}";
     // =========================
@@ -843,10 +854,13 @@ void EnviarAPI() {
     Serial.println(json);
     Serial.println("=========================\n");
     http.end();
-  } else {
+    
+    wifi(tft.color565(0, 255, 0));
+  }else {
     Serial.println("WiFi desconectado");
     wifi(tft.color565(255, 255, 255));
-  }
+    WiFi.reconnect();
+  } 
 }
 //---------------- Mostrar dados no Serial e no Display ----------------//
 void MostrarDados() {
@@ -982,8 +996,7 @@ void MostrarDados() {
     if (PossivelQueda) {
 
       Serial.println("ALERTA: POSSIVEL QUEDA");
-      alertaVisual();
-      alerta();
+
     }
 
     Serial.println("===================================\n");
