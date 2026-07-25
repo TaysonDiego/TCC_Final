@@ -40,8 +40,8 @@ Adafruit_MPU6050 Sensor_Queda;
 //==================================================
 // CONFIGURAÇÕES DE WIFI
 //==================================================
-const char* Nome = "Thaysla casa";
-const char* Senha = "Taysoncasa.#";
+const char* Nome = "*";
+const char* Senha = "*";
 
 //==================================================
 // CONFIGURAÇÕES DA HORA
@@ -53,7 +53,8 @@ const int daylightOffset_sec = 0;
 //==================================================
 // API
 //==================================================
-char* url = "https://api-monitoramento-pvcc.onrender.com/dados";
+//char* url = "https://api-monitoramento-pvcc.onrender.com/dados";
+char* url = "https://valiant-violin-gizzard.ngrok-free.dev/device/data";
 //==================================================
 // CONFIGURAÇÕES DA TELA
 //==================================================
@@ -586,6 +587,7 @@ void AtualizarSPO2() {
     BufferIndex = 0;
   }
 }
+//---------------- Desenhar Gota ----------------//
 void gota() {
 
   // Parte redonda da gota
